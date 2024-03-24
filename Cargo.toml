@@ -1,6 +1,5 @@
 [workspace]
 resolver = "2"
 members = [
-    "clients/rust",
     "programs/x404"
 ]

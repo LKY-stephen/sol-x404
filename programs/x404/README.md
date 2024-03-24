@@ -15,5 +15,5 @@ cargo build-bpf
 You may run the following command to build the program and run its Rust tests.
 
 ```sh
-cargo test-bpf
+cargo test-sbf
 ```
