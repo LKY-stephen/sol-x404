@@ -15,5 +15,6 @@ cargo build-bpf
 You may run the following command to build the program and run its Rust tests.
 
 ```sh
+cp ./metaplex_token_metadata_program.so ./target/deploy/
 cargo test-sbf
 ```

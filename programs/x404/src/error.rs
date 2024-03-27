@@ -7,7 +7,7 @@ pub enum SolX404Error {
     InvalidLength,
     /// 1 - Factory permission error
     #[msg("Can only call by Factory")]
-    OnlyCallByFactory,
+    OnlyCallByOwner,
     /// 2 - Not supported NFT
     #[msg("Target NFT is not blue chip NFT")]
     NotBlueChipNFT,
