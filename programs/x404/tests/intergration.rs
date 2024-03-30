@@ -24,17 +24,11 @@ async fn test_program() {
     let hub_state = add_pda(&[b"hub".as_ref()], ID);
     let source = add_pda(&[b"test_mint".as_ref()], Token2022::id());
     let x404_state = add_pda(&[b"state".as_ref(), source.as_ref()], ID);
-    let nft_mint = add_pda(
-        &[b"404_contract_nft_mint".as_ref(), x404_state.as_ref()],
-        ID,
-    );
+    let nft_mint = add_pda(&[b"nft_mint".as_ref(), x404_state.as_ref()], ID);
 
     let nft_token =
         get_associated_token_address_with_program_id(&nft_mint, &nft_mint, &Token2022::id());
-    let fungible_mint = add_pda(
-        &[b"404_contract_fungible_mint".as_ref(), x404_state.as_ref()],
-        ID,
-    );
+    let fungible_mint = add_pda(&[b"fungible_mint".as_ref(), x404_state.as_ref()], ID);
 
     let mut context = validator.start_with_context().await;
 
@@ -75,6 +69,7 @@ async fn test_program() {
         nft_mint,
         fungible_mint,
         owner.pubkey(),
+        1000,
     );
 
     execute(&mut context, &owner, &[init_x404_instruction], vec![&owner])

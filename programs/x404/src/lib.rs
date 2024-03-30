@@ -2,21 +2,22 @@ pub mod error;
 pub mod instructions;
 pub mod state;
 
+mod utils;
+
 use anchor_lang::prelude::*;
 use state::*;
-
-use anchor_spl::token_2022::MintTo;
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
 #[program]
 mod x404 {
-    use anchor_spl::token_2022::{
-        freeze_account, mint_to, set_authority, spl_token_2022::instruction::AuthorityType,
-        FreezeAccount, SetAuthority,
-    };
 
     use super::*;
-    use crate::error::SolX404Error;
+    use crate::{
+        error::SolX404Error,
+        utils::{
+            add_to_owner_store, initiate_owner_store, mint_nft, mint_token, transfer_spl_token,
+        },
+    };
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let hub = &mut ctx.accounts.state;
@@ -50,6 +51,7 @@ mod x404 {
         state.nft_supply = 0;
         state.nft_in_use = 0;
         state.nft_instore = [0; 128];
+        state.fungible_supply = params.fungible_supply;
         Ok(())
     }
 
@@ -59,7 +61,7 @@ mod x404 {
     // here to make sure not initiate state twice.
     pub fn mint_collection(
         ctx: Context<MintCollection>,
-        params: InitCollectionParams,
+        _params: InitCollectionParams,
     ) -> Result<()> {
         msg!("check permission for create collection");
 
@@ -75,135 +77,118 @@ mod x404 {
             return err!(SolX404Error::InvalidNFTAddress);
         }
 
-        let cpi_context = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            MintTo {
-                mint: ctx.accounts.nft_mint.to_account_info(),
-                to: ctx.accounts.nft_token.to_account_info(),
-                authority: ctx.accounts.signer.to_account_info(),
-            },
-        );
-
-        mint_to(cpi_context, 1)?;
-        msg!("NFT minted successfully.");
-
-        // metaplex is too annoying for this poc, left it for future
-        // msg!("Creating NFT metadata.");
-
+        msg!("start to mint");
+        // seeds for state account
         let seeds = [
-            b"404_contract_nft_mint",
+            b"nft_mint",
             ctx.accounts.state.to_account_info().key.as_ref(),
             &[ctx.bumps.nft_mint],
         ];
 
-        let pad_signer = [seeds.as_ref()];
-
-        //
-
-        // create_metadata_accounts_v3(
-        //     CpiContext::new_with_signer(
-        //         ctx.accounts.token_metadata_program.to_account_info(),
-        //         CreateMetadataAccountsV3 {
-        //             metadata: ctx.accounts.metadata.to_account_info(),
-        //             mint: ctx.accounts.nft_mint.to_account_info(),
-        //             mint_authority: ctx.accounts.signer.to_account_info(),
-        //             payer: ctx.accounts.signer.to_account_info(),
-        //             update_authority: ctx.accounts.signer.to_account_info(),
-        //             system_program: ctx.accounts.system_program.to_account_info(),
-        //             rent: ctx.accounts.rent.to_account_info(),
-        //         },
-        //         [seeds.as_slice()].as_slice(),
-        //     ),
-        //     params.data(),
-        //     false,
-        //     true,
-        //     None,
-        // )?;
-        msg!("Close NFT Account.");
-        let close_context = CpiContext::new_with_signer(
+        let nft_signer = [seeds.as_ref()];
+        mint_nft(
             ctx.accounts.token_program.to_account_info(),
-            FreezeAccount {
-                current_authority: ctx.accounts.nft_mint.to_account_info(),
-                account_or_mint: ctx.accounts.nft_token.to_account_info(),
-            },
-            pad_signer.as_slice(),
-        );
-        if freeze_account(close_context).is_err() {
-            return err!(SolX404Error::FailedToGenerateAccount);
-        }
+            ctx.accounts.nft_mint.clone(),
+            ctx.accounts.nft_token.to_account_info(),
+            ctx.accounts.signer.to_account_info(),
+            nft_signer.as_slice(),
+        )?;
+
+        msg!("NFT minted successfully.");
         Ok(())
     }
 
-    // pub fn deposit(ctx: Context<DepositToken>, params: DepositParams) -> Result<()> {
-    //     // msg!("check permission for create collection");
+    pub fn deposit(ctx: Context<DepositSPLNFT>, params: DepositParams) -> Result<()> {
+        msg!("check permission for create collection");
 
-    //     // if ctx.accounts.signer.key() != ctx.accounts.state.owner {
-    //     //     msg!("signer: {}", ctx.accounts.signer.key());
-    //     //     msg!("owner: {}", ctx.accounts.state.owner);
-    //     //     return err!(SolX404Error::OnlyCallByOwner);
-    //     // }
+        if ctx.accounts.signer.key() != ctx.accounts.state.owner {
+            msg!("signer: {}", ctx.accounts.signer.key());
+            msg!("owner: {}", ctx.accounts.state.owner);
+            return err!(SolX404Error::OnlyCallByOwner);
+        }
 
-    //     // if ctx.accounts.nft_mint.key() != ctx.accounts.state.nft_mint {
-    //     //     msg!("signer: {}", ctx.accounts.nft_mint.key());
-    //     //     msg!("owner: {}", ctx.accounts.state.nft_mint);
-    //     //     return err!(SolX404Error::InvalidNFTAddress);
-    //     // }
+        if ctx.accounts.nft_mint.key() != ctx.accounts.state.nft_mint {
+            msg!("signer: {}", ctx.accounts.nft_mint.key());
+            msg!("owner: {}", ctx.accounts.state.nft_mint);
+            return err!(SolX404Error::InvalidNFTAddress);
+        }
 
-    //     // let cpi_context = CpiContext::new(
-    //     //     ctx.accounts.token_program.to_account_info(),
-    //     //     MintTo {
-    //     //         mint: ctx.accounts.nft_mint.to_account_info(),
-    //     //         to: ctx.accounts.nft_token.to_account_info(),
-    //     //         authority: ctx.accounts.signer.to_account_info(),
-    //     //     },
-    //     // );
+        // TODO check deposit mint's metadata against the state source
 
-    //     // mint_to(cpi_context, 1)?;
-    //     // msg!("NFT minted successfully.");
-    //     // msg!("Creating NFT metadata.");
+        msg!("init bank");
 
-    //     // let _seeds = &[
-    //     //     "404_contract_nft_mint".as_bytes(),
-    //     //     ctx.accounts.state.to_account_info().key.as_ref(),
-    //     //     &[ctx.bumps.nft_mint],
-    //     // ];
+        transfer_spl_token(
+            ctx.accounts.deposit_program.to_account_info(),
+            ctx.accounts.deposit_mint.to_account_info(),
+            ctx.accounts.deposit.to_account_info(),
+            ctx.accounts.nft_bank.to_account_info(),
+            ctx.accounts.signer.to_account_info(),
+            ctx.accounts.state.fungible_supply,
+            ctx.accounts.state.decimal,
+        )?;
 
-    //     // let _metadata = params.data();
-    //     // let _account_data = CreateMetadataAccountsV3 {
-    //     //     metadata: ctx.accounts.metadata.to_account_info(),
-    //     //     mint: ctx.accounts.nft_mint.to_account_info(),
-    //     //     mint_authority: ctx.accounts.signer.to_account_info(),
-    //     //     payer: ctx.accounts.signer.to_account_info(),
-    //     //     update_authority: ctx.accounts.signer.to_account_info(),
-    //     //     system_program: ctx.accounts.system_program.to_account_info(),
-    //     //     rent: ctx.accounts.rent.to_account_info(),
-    //     // };
+        ctx.accounts.nft_bank.id = ctx.accounts.deposit_mint.to_account_info().key();
+        ctx.accounts.nft_bank.owner = ctx.accounts.signer.to_account_info().key();
+        ctx.accounts.nft_bank.redeem_deadline = params.redeem_deadline;
 
-    //     // unit test cannot find the program properly, so skip metadata for now.
-    //     // create_metadata_accounts_v3(
-    //     //     CpiContext::new_with_signer(
-    //     //         ctx.accounts.token_metadata_program.to_account_info(),
-    //     //         account_data,
-    //     //         &[&seeds[..]],
-    //     //     ),
-    //     //     metadata,
-    //     //     false,
-    //     //     true,
-    //     //     None,
-    //     // )?;
-    //     // msg!("Close NFT Account.");
-    //     // if set_authority(
-    //     //     &ctx.accounts.token_program.key(),
-    //     //     &ctx.accounts.nft_mint.key(),
-    //     //     None,
-    //     //     AuthorityType::FreezeAccount,
-    //     //     &ctx.accounts.nft_mint.key(),
-    //     //     &[&ctx.accounts.nft_mint.key()],
-    //     // )
-    //     // .is_err()
-    //     // {
-    //     //     return err!(SolX404Error::FailedToGenerateAccount);
-    //     // }
-    //     Ok(())
-    // }
+        msg!("start to mint");
+        // seeds for state account
+        let seeds = [
+            b"nft_mint",
+            ctx.accounts.state.to_account_info().key.as_ref(),
+            ctx.accounts.deposit_mint.to_account_info().key.as_ref(),
+            &[ctx.bumps.nft_mint],
+        ];
+
+        let nft_signer = [seeds.as_ref()];
+        mint_nft(
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.nft_mint.clone(),
+            ctx.accounts.nft_token.to_account_info(),
+            ctx.accounts.nft_mint.to_account_info(),
+            nft_signer.as_slice(),
+        )?;
+
+        msg!("NFT minted successfully.");
+
+        let rent = Rent::get()?;
+        if ctx.accounts.owner_store.get_lamports() == 0 {
+            initiate_owner_store(
+                ctx.accounts.owner_store.clone(),
+                ctx.accounts.signer.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.state.to_account_info(),
+                rent,
+                ctx.accounts.deposit_mint.to_account_info().key(),
+            )?;
+        } else {
+            add_to_owner_store(
+                ctx.accounts.owner_store.clone(),
+                rent,
+                ctx.accounts.deposit_mint.to_account_info().key(),
+            )?;
+        }
+
+        msg!("NFT recorded");
+
+        let seeds = [
+            b"fungible_mint",
+            ctx.accounts.state.to_account_info().key.as_ref(),
+            &[ctx.bumps.fungible_mint],
+        ];
+
+        let fungible_signer = [seeds.as_ref()];
+
+        mint_token(
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.fungible_mint.to_account_info(),
+            ctx.accounts.fungible_token.to_account_info(),
+            ctx.accounts.state.fungible_supply,
+            ctx.accounts.fungible_mint.to_account_info(),
+            fungible_signer.as_slice(),
+        )?;
+
+        msg!("Fungible Token minted successfully.");
+        Ok(())
+    }
 }

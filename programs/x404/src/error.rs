@@ -53,4 +53,13 @@ pub enum SolX404Error {
     /// 15 - account generate failed
     #[msg("Failed to generate account")]
     FailedToGenerateAccount,
+    /// 16 - mint close failed
+    #[msg("Failed to close mint")]
+    FailedToCloseMint,
+    /// 17 - mint nft failed
+    #[msg("Failed to mint nft")]
+    FailedToMintNFT,
+    /// 18 - nft already minted
+    #[msg("NFT already minted")]
+    NFTAlreadyMinted,
 }

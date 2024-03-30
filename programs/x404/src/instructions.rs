@@ -26,12 +26,14 @@ pub fn create_x404(
     nft_mint: Pubkey,
     fungible_mint: Pubkey,
     signer: Pubkey,
+    fungible_supply: u64,
 ) -> Instruction {
     let data = instruction::CreateX404 {
         params: InitTokenParams {
             redeem_max_deadline,
             redeem_fee,
             decimals,
+            fungible_supply,
         },
     };
     Instruction::new_with_bytes(
@@ -65,7 +67,7 @@ pub fn create_collection(
     signer: Pubkey,
 ) -> Instruction {
     let data = instruction::MintCollection {
-        params: InitCollectionParams {
+        _params: InitCollectionParams {
             name,
             symbol,
             uri,
