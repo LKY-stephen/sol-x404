@@ -1,23 +1,18 @@
-# Sol X404
+## Building
 
-Solana version of x404
+This will build the program and output a `.so` file in a non-comitted `target/deploy` directory which is used by the `config/shank.cjs` configuration file to start a new local validator with the latest changes on the program.
 
-## Programs
+```sh
+cargo build-bpf
+```
 
-This project contains the following programs:
+## Testing
 
-- [Sol X404](./programs/sol-x404/README.md) `BTz8yJGxKm6jEZAncTCMHDs4uTFvi5sVMUjCBUwfVkUM`
+You may run the following command to build the program and run its Rust tests.
 
-You will need a Rust version compatible with BPF to compile the program, currently we recommend using Rust 1.68.0.
-
-## Clients
-
-This project contains the following clients:
-
-- [JavaScript](./clients/js/README.md)
-- [Rust](./clients/rust/README.md)
-
-
-## Contributing
-
-Check out the [Contributing Guide](./CONTRIBUTING.md) the learn more about how to contribute to this project.
+```sh
+cargo test-sbf
+cp ./spl_token_2022.so ./target/deploy/
+cd tests
+cargo test-sbf
+```

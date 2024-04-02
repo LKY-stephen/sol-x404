@@ -1,0 +1,19 @@
+[package]
+name = "tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+x404 = { path = "../programs/x404" }
+x404_hook = { path = "../programs/x404_hook" }
+anchor-lang = "0.29.0"
+anchor-spl = "0.29.0"
+solana-program = "1.18.5"
+solana-program-test = "1.18.5"
+solana-sdk = "1.18.5"
+spl-transfer-hook-interface = "0.6.3"
+
+[[test]]
+name = "intergration"
+path = "intergration.rs"

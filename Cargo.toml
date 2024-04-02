@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
-members = [
-    "programs/x404"
+members = [ 
+    "programs/x404_hook",
+    "programs/x404",
+    "tests",
 ]

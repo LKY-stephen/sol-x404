@@ -35,12 +35,12 @@ pub enum SolX404Error {
     /// 9 - Emergency Close
     #[msg("Current state is emergency closed")]
     EmergencyClose,
-    /// 10 - max redeem deadline error
-    #[msg("Invalid max redeem deadline")]
-    InvaildRedeemMaxDeadline,
+    /// 10 - redeem deadline error
+    #[msg("Invalid redeem deadline")]
+    InvaildRedeemDeadline,
     /// 11 - Insufficient fee for redeem
     #[msg("Insufficient fee for redeem")]
-    MsgValueNotEnough,
+    InsufficientFee,
     /// 12 - Failed to send Sol token
     #[msg("Failed to send Sol token")]
     SendSolFailed,
@@ -62,4 +62,13 @@ pub enum SolX404Error {
     /// 18 - nft already minted
     #[msg("NFT already minted")]
     NFTAlreadyMinted,
+    /// 19 - invalid owner store
+    #[msg("Invalid owner store")]
+    InvalidOwnerStore,
+    /// 20 - insufficient NFT
+    #[msg("Insufficient NFT from")]
+    InsufficientNFT,
+    // 21 - only call by hooker
+    #[msg("Only call by hooker")]
+    OnlyCallByHooker,
 }
