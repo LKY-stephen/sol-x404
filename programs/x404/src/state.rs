@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
@@ -5,11 +7,14 @@ use anchor_spl::{
     token_2022::Token2022,
     token_interface::{Mint, TokenAccount},
 };
+
+pub const BANK_SIZE: usize = 8 + 8 + 32 + 32;
+
 // validate incoming accounts here
 #[account]
 pub struct X404Hub {
     // emergent close
-    pub embergency_close: bool,
+    pub emergency_close: bool,
     // manager who can create new X404 account or update underlying X404
     pub manager: Pubkey,
 }
@@ -28,6 +33,16 @@ pub struct NFTBank {
 pub struct OwnerStore {
     // emergent close
     pub store: Vec<u8>,
+}
+
+impl OwnerStore {
+    pub fn get_map(&self) -> HashMap<Pubkey, Vec<Pubkey>> {
+        HashMap::<Pubkey, Vec<Pubkey>>::try_from_slice(self.store.as_slice()).unwrap()
+    }
+
+    pub fn update_map(&mut self, map: &HashMap<Pubkey, Vec<Pubkey>>) {
+        self.store = map.try_to_vec().unwrap();
+    }
 }
 
 #[account]
@@ -50,6 +65,8 @@ pub struct X404State {
     pub collection_mint: Pubkey,
     //supply of nft
     pub nft_supply: u64,
+    //supply of nft
+    pub nft_in_use: u64,
     // fungible token per deposit/redeem
     pub fungible_supply: u64,
 }
@@ -85,7 +102,7 @@ pub struct CreateX404<'info> {
     #[account(
         init,
         payer = signer,
-        space = 8 + 32 + 8 + 8 + 32 + 1 + 32 + 32 + 32 + 8 + 8,
+        space = 8 + 32 + 8 + 8 + 32 + 1 + 32 + 32 + 32 + 8 + 8 + 8,
         seeds = [b"state".as_ref(), source.to_account_info().key.as_ref()],
         bump,
     )]
@@ -117,7 +134,6 @@ pub struct CreateX404<'info> {
     pub fungible_mint: UncheckedAccount<'info>,
     #[account(mut, signer)]
     pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
     pub token_program: Program<'info, Token2022>,
     pub system_program: Program<'info, System>,
 }
@@ -147,7 +163,6 @@ pub struct MintCollection<'info> {
     pub collection_token: InterfaceAccount<'info, TokenAccount>,
     #[account(mut, signer)]
     pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
     pub token_program: Program<'info, Token2022>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -156,55 +171,50 @@ pub struct MintCollection<'info> {
 #[derive(Accounts)]
 #[instruction(params:DepositParams)]
 pub struct DepositSPLNFT<'info> {
-    #[account(mut,
+    #[account(
+        mut,
         seeds = [b"state".as_ref(), params.source.as_ref()],
         bump,)]
     pub state: Box<Account<'info, X404State>>,
-    // CHECKED: account to store the NFT owned by the owner, should be owned by
-    // the program. Ideally should use init_if_needed, but because the store is
-    // dynamic size, haven't figured out how to init through constraint.
     #[account(
         mut,
         seeds = [b"owner_store".as_ref(), state.to_account_info().key.as_ref()],
         bump,
     )]
     pub owner_store: Box<Account<'info, OwnerStore>>,
-    #[account(mut)]
     pub deposit_mint: Box<Account<'info, SPLMint>>,
-    #[account(mut)]
-    pub deposit: Box<Account<'info, SPLTokenAccount>>,
+    #[account(mut,
+        associated_token::mint = deposit_mint,
+        associated_token::authority = signer,
+        associated_token::token_program = deposit_program,
+    )]
+    pub deposit_holder: Box<Account<'info, SPLTokenAccount>>,
     #[account(
-        init,
+        init_if_needed,
         payer = signer,
         associated_token::mint = deposit_mint,
         associated_token::authority = state,
+        associated_token::token_program = deposit_program,
     )]
     pub deposit_receiver: Box<Account<'info, SPLTokenAccount>>,
     #[account(
         init,
         payer = signer,
-        space = 8 + 32 + 8 + 32,
         seeds = [b"nft_bank".as_ref(), deposit_mint.to_account_info().key.as_ref()],
         bump,
+        space = BANK_SIZE,
     )]
     pub nft_bank: Box<Account<'info, NFTBank>>,
+    // We do not init this mint in all cases, so we need to init is in program
     #[account(
-        init,
-        payer = signer,
         seeds = [b"nft_mint".as_ref(),state.to_account_info().key.as_ref(), state.nft_supply.to_le_bytes().as_ref()],
         bump,
-        mint::decimals = 0,
-        mint::authority = nft_mint,
     )]
-    pub nft_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub nft_mint: AccountInfo<'info>,
+    // CHECKED: This is the associated token account for the NFT mint with authroity state
+    pub nft_token: AccountInfo<'info>,
     #[account(
-        init_if_needed,
-        payer = signer,
-        associated_token::mint = nft_mint,
-        associated_token::authority = state,
-    )]
-    pub nft_token: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(mut,
+        mut,
         seeds = [b"fungible_mint".as_ref(), state.to_account_info().key.as_ref()],
         bump,
     )]
@@ -218,11 +228,10 @@ pub struct DepositSPLNFT<'info> {
     pub fungible_token: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
     pub deposit_program: Program<'info, Token>,
     pub token_program: Program<'info, Token2022>,
-    pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -275,10 +284,9 @@ pub struct BindNFT<'info> {
     pub fungible_token: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
     pub token_program: Program<'info, Token2022>,
-    pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -330,10 +338,9 @@ pub struct UnbindNFT<'info> {
     pub fungible_token: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
     pub token_program: Program<'info, Token2022>,
-    pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -379,55 +386,55 @@ pub struct RedeemSPLNFT<'info> {
         seeds = [b"state".as_ref(), params.source.as_ref()],
         bump)]
     pub state: Box<Account<'info, X404State>>,
-    #[account(mut)]
-    pub withdrawal_nft: Account<'info, SPLMint>,
-    #[account(mut,
-        associated_token::mint = withdrawal_nft,
-        associated_token::authority = state,)]
-    pub withdrawal: Account<'info, SPLTokenAccount>,
-    #[account(
-        init_if_needed,
-        payer = signer,
-        associated_token::mint = withdrawal_nft,
-        associated_token::authority = signer,
-    )]
-    pub withdrawal_receiver: Account<'info, SPLTokenAccount>,
-    #[account(mut,
-        seeds = [b"nft_bank".as_ref(), withdrawal_nft.to_account_info().key.as_ref()],
-        bump,
-    )]
-    pub nft_bank: Box<Account<'info, NFTBank>>,
-    // CHECKED: account to store the NFT owned by the owner, should be owned by
-    // the program. Ideally should use init_if_needed, but because the store is
-    // dynamic size, haven't figured out how to do it.
     #[account(
         mut,
         seeds = [b"owner_store".as_ref(), state.to_account_info().key.as_ref()],
         bump,
     )]
     pub owner_store: Box<Account<'info, OwnerStore>>,
+    #[account(mut)]
+    pub withdraw_mint: Box<Account<'info, SPLMint>>,
+    #[account(mut,
+        associated_token::mint = withdraw_mint,
+        associated_token::authority = state,
+        associated_token::token_program = withdrawal_program,)]
+    pub withdraw_holder: Box<Account<'info, SPLTokenAccount>>,
+    #[account(
+        init_if_needed,
+        payer = signer,
+        associated_token::mint = withdraw_mint,
+        associated_token::authority = signer,
+        associated_token::token_program = withdrawal_program,
+    )]
+    pub withdrawal_receiver: Box<Account<'info, SPLTokenAccount>>,
+    #[account(mut,
+        seeds = [b"nft_bank".as_ref(), withdraw_mint.to_account_info().key.as_ref()],
+        bump,
+    )]
+    pub nft_bank: Box<Account<'info, NFTBank>>,
     #[account(mut,
         seeds = [b"fungible_mint".as_ref(), state.to_account_info().key.as_ref()],
         bump,
     )]
-    pub fungible_mint: InterfaceAccount<'info, Mint>,
+    pub fungible_mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(mut,
         associated_token::mint = fungible_mint,
         associated_token::authority = signer,
+        associated_token::token_program = token_program,
     )]
-    pub fungible_token: InterfaceAccount<'info, TokenAccount>,
+    pub fungible_token: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(mut,
         associated_token::mint = fungible_mint,
         associated_token::authority = nft_bank.owner,
+        associated_token::token_program = token_program,
     )]
-    pub original_owner: InterfaceAccount<'info, TokenAccount>,
+    pub original_owner: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
     pub withdrawal_program: Program<'info, Token>,
     pub token_program: Program<'info, Token2022>,
-    pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Debug, Clone)]

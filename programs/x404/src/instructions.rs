@@ -2,7 +2,7 @@ use crate::{
     instruction, DepositParams, InitCollectionParams, InitTokenParams, RebalanceParams,
     RedeemParams, UnbindParams, ID,
 };
-use anchor_lang::{prelude::*, solana_program::sysvar::rent, system_program, InstructionData};
+use anchor_lang::{prelude::*, system_program, InstructionData};
 use anchor_spl::{
     associated_token, token,
     token_2022::{self},
@@ -58,8 +58,6 @@ pub fn create_x404(
             AccountMeta::new(collection_mint, false),
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(signer, true),
-            // rendt
-            AccountMeta::new_readonly(rent::ID, false),
             // token
             AccountMeta::new_readonly(anchor_spl::token_2022::ID, false),
             // system
@@ -94,8 +92,6 @@ pub fn mint_collection(
             AccountMeta::new(nft_mint, false),
             AccountMeta::new(nft_token, false),
             AccountMeta::new(signer, true),
-            // rent
-            AccountMeta::new_readonly(rent::ID, false),
             // token
             AccountMeta::new_readonly(token_2022::ID, false),
             // ata
@@ -114,6 +110,7 @@ pub fn deposit_spl_nft(
     deposit_mint: Pubkey,
     deposit_holder: Pubkey,
     deposit_receiver: Pubkey,
+    nft_bank: Pubkey,
     nft_mint: Pubkey,
     nft_token: Pubkey,
     fungible_mint: Pubkey,
@@ -132,16 +129,15 @@ pub fn deposit_spl_nft(
         vec![
             AccountMeta::new(state, false),
             AccountMeta::new(owner_store, false),
-            AccountMeta::new(deposit_mint, false),
+            AccountMeta::new_readonly(deposit_mint, false),
             AccountMeta::new(deposit_holder, false),
             AccountMeta::new(deposit_receiver, false),
+            AccountMeta::new(nft_bank, false),
             AccountMeta::new(nft_mint, false),
             AccountMeta::new(nft_token, false),
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(fungible_token, false),
             AccountMeta::new(signer, true),
-            // rent
-            AccountMeta::new_readonly(rent::ID, false),
             // token
             AccountMeta::new_readonly(token::ID, false),
             // token
@@ -161,9 +157,8 @@ pub fn redeem_spl_nft(
     withdraw_mint: Pubkey,
     withdraw_holder: Pubkey,
     withdraw_receiver: Pubkey,
-    nft_mint: Pubkey,
-    nft_token: Pubkey,
-    nft_receiver: Pubkey,
+    nft_bank: Pubkey,
+    original_owner_account: Pubkey,
     fungible_mint: Pubkey,
     fungible_token: Pubkey,
     signer: Pubkey,
@@ -180,14 +175,11 @@ pub fn redeem_spl_nft(
             AccountMeta::new(withdraw_mint, false),
             AccountMeta::new(withdraw_holder, false),
             AccountMeta::new(withdraw_receiver, false),
-            AccountMeta::new(nft_mint, false),
-            AccountMeta::new(nft_token, false),
-            AccountMeta::new(nft_receiver, false),
+            AccountMeta::new(nft_bank, false),
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(fungible_token, false),
+            AccountMeta::new(original_owner_account, false),
             AccountMeta::new(signer, true),
-            // rent
-            AccountMeta::new_readonly(rent::ID, false),
             // token
             AccountMeta::new_readonly(token::ID, false),
             // token
@@ -227,8 +219,6 @@ pub fn bind(
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(fungible_token, false),
             AccountMeta::new(signer, true),
-            // rent
-            AccountMeta::new_readonly(rent::ID, false),
             // token
             AccountMeta::new_readonly(token_2022::ID, false),
             // ata
@@ -266,8 +256,6 @@ pub fn unbind(
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(fungible_token, false),
             AccountMeta::new(signer, true),
-            // rent
-            AccountMeta::new_readonly(rent::ID, false),
             // token
             AccountMeta::new_readonly(token_2022::ID, false),
             // ata

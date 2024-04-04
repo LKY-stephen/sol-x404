@@ -13,14 +13,12 @@ mod x404 {
 
     use std::cmp::min;
 
-    use anchor_lang::system_program::{create_account, CreateAccount};
-    use anchor_spl::token_2022::{
-        initialize_mint2,
-        spl_token_2022::{
+    use anchor_spl::{
+        associated_token::get_associated_token_address_with_program_id,
+        token_2022::spl_token_2022::{
             extension::{transfer_hook::instruction::initialize as hook_initialize, ExtensionType},
             state::Mint,
         },
-        InitializeMint2,
     };
     use solana_program::program::invoke;
     use utils::transfer_from_owner_store;
@@ -31,7 +29,7 @@ mod x404 {
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let hub = &mut ctx.accounts.state;
         hub.manager = *ctx.accounts.signer.key;
-        hub.embergency_close = false;
+        hub.emergency_close = false;
         msg!(
             "Initialized new hub: {} with owner {}!",
             hub.to_account_info().key,
@@ -58,6 +56,7 @@ mod x404 {
         state.collection_mint = ctx.accounts.collection_mint.to_account_info().key();
         state.fungible_hook = params.hook_extra_account;
         state.nft_supply = 0;
+        state.nft_in_use = 0;
         state.fungible_supply = params.fungible_supply;
 
         msg!("create fungible mint");
@@ -68,26 +67,19 @@ mod x404 {
             &[ctx.bumps.fungible_mint],
         ];
 
-        let fungible_signer = [seeds.as_ref()];
-
-        let rent = Rent::from_account_info(&ctx.accounts.rent.to_account_info())?;
-        let init_ctx = CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            CreateAccount {
-                from: ctx.accounts.signer.to_account_info().clone(),
-                to: ctx.accounts.fungible_mint.to_account_info().clone(),
-            },
-        )
-        .with_signer(fungible_signer.as_slice());
-        // fixed mint size in token2022
         let mint_size =
             ExtensionType::try_calculate_account_len::<Mint>(&[ExtensionType::TransferHook])?;
-        create_account(
-            init_ctx,
-            rent.minimum_balance(mint_size),
+
+        create_new_account(
+            seeds.as_ref(),
+            Rent::get()?,
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.signer.to_account_info(),
+            ctx.accounts.fungible_mint.to_account_info(),
             mint_size as u64,
             ctx.accounts.token_program.key,
         )?;
+
         msg!("initialize transfer hook");
         // init transfer hook
         let extra_init = hook_initialize(
@@ -102,20 +94,11 @@ mod x404 {
         // init fungible mint
 
         msg!("initiate fungible mint");
-        let init_mint_ctx = CpiContext::new(
+        initiate_mint_account(
             ctx.accounts.token_program.to_account_info(),
-            InitializeMint2 {
-                mint: ctx.accounts.fungible_mint.to_account_info(),
-            },
-        );
-
-        initialize_mint2(
-            init_mint_ctx,
+            ctx.accounts.fungible_mint.to_account_info(),
             params.decimals,
-            ctx.accounts.fungible_mint.key,
-            None,
         )?;
-
         msg!("fungible mint created successfully");
         Ok(())
     }
@@ -166,18 +149,25 @@ mod x404 {
     }
 
     pub fn deposit(ctx: Context<DepositSPLNFT>, params: DepositParams) -> Result<()> {
-        msg!("check permission for create collection");
+        msg!("check permission for deposit nft");
 
         // TODO check deposit mint's metadata against the state source
         require!(
             params.redeem_deadline < ctx.accounts.state.redeem_max_deadline,
             SolX404Error::InvaildRedeemDeadline
         );
+        // create associated account for the nft
+        let state_seeds = [
+            b"state",
+            ctx.accounts.state.source.as_ref(),
+            &[ctx.bumps.state],
+        ];
+
         // deposit the spl nft to state.
         transfer_spl_token(
             ctx.accounts.deposit_program.to_account_info(),
             ctx.accounts.deposit_mint.to_account_info(),
-            ctx.accounts.deposit.to_account_info(),
+            ctx.accounts.deposit_holder.to_account_info(),
             ctx.accounts.deposit_receiver.to_account_info(),
             ctx.accounts.signer.to_account_info(),
             1,
@@ -188,7 +178,7 @@ mod x404 {
         // close account to save rent
         close_spl_account(
             ctx.accounts.deposit_program.to_account_info(),
-            ctx.accounts.deposit.to_account_info(),
+            ctx.accounts.deposit_holder.to_account_info(),
             ctx.accounts.signer.to_account_info(),
         )?;
 
@@ -198,32 +188,72 @@ mod x404 {
         ctx.accounts.nft_bank.owner = ctx.accounts.signer.to_account_info().key();
         ctx.accounts.nft_bank.redeem_deadline = params.redeem_deadline + Clock::get()?.epoch;
 
-        // first try to use nft instore
-        if transfer_from_owner_store(
-            &mut ctx.accounts.owner_store,
-            ctx.accounts.state.key(),
-            ctx.accounts.signer.key(),
-            1,
-        )
-        .is_err()
-        {
+        if ctx.accounts.state.nft_supply > ctx.accounts.state.nft_in_use {
+            // if sufficient store, just keep use the existing nft
+
+            msg!("use existed nft");
+            transfer_from_owner_store(
+                &mut ctx.accounts.owner_store,
+                ctx.accounts.state.key(),
+                ctx.accounts.signer.key(),
+                1,
+            )?;
+            ctx.accounts.state.nft_in_use += 1;
+        } else {
+            msg!("mint new nft");
+            let expected_key = get_associated_token_address_with_program_id(
+                &ctx.accounts.state.key(),
+                ctx.accounts.nft_mint.key,
+                ctx.accounts.deposit_program.key,
+            );
+            require!(
+                expected_key == ctx.accounts.nft_token.to_account_info().key(),
+                SolX404Error::InvalidNFTAddress
+            );
+
             msg!("start to mint");
             // seeds for state account
-            let seeds = [
+            let rent = Rent::get()?;
+
+            let nft_id = ctx.accounts.state.nft_supply.to_le_bytes();
+            let mint_seeds = [
                 b"nft_mint",
-                ctx.accounts.state.to_account_info().key.as_ref(),
-                ctx.accounts.deposit_mint.to_account_info().key.as_ref(),
+                ctx.accounts.state.source.as_ref(),
+                nft_id.as_ref(),
                 &[ctx.bumps.nft_mint],
             ];
 
-            let nft_signer = [seeds.as_ref()];
+            let nft_signer = [mint_seeds.as_ref()];
 
+            // we let state to pay for the rent for fair play
+            create_new_account(
+                mint_seeds.as_ref(),
+                rent.clone(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.signer.to_account_info(),
+                ctx.accounts.nft_mint.to_account_info(),
+                MINT_SIZE,
+                ctx.accounts.token_program.key,
+            )?;
+
+            initiate_mint_account(
+                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.nft_mint.to_account_info(),
+                0,
+            )?;
+
+            create_token_account(
+                ctx.accounts.associated_token_program.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.state.to_account_info(),
+                ctx.accounts.state.to_account_info(),
+                ctx.accounts.nft_mint.to_account_info(),
+                ctx.accounts.nft_token.to_account_info(),
+                state_seeds.as_ref(),
+            )?;
             // mint nft first to state, later, the user can bind the nft by fungible tokens for trading
 
-            require!(
-                ctx.accounts.nft_mint.supply == 0,
-                SolX404Error::NFTAlreadyMinted
-            );
             mint_nft(
                 ctx.accounts.token_program.to_account_info(),
                 ctx.accounts.nft_mint.to_account_info(),
@@ -232,10 +262,11 @@ mod x404 {
                 nft_signer.as_slice(),
             )?;
             ctx.accounts.state.nft_supply += 1;
+            ctx.accounts.state.nft_in_use += 1;
 
             add_to_owner_store(
                 &mut ctx.accounts.owner_store,
-                Rent::from_account_info(&ctx.accounts.rent.to_account_info())?,
+                rent,
                 ctx.accounts.nft_mint.key(),
                 ctx.accounts.signer.key(),
             )?;
@@ -295,7 +326,7 @@ mod x404 {
         if ctx.accounts.signer.key() != ctx.accounts.nft_bank.owner {
             // charge fee
             let old_receiver: usize =
-                (ctx.accounts.original_owner.amount / ctx.accounts.state.nft_supply) as usize;
+                (ctx.accounts.original_owner.amount / ctx.accounts.state.fungible_supply) as usize;
             transfer_token(
                 ctx.accounts.token_program.to_account_info(),
                 ctx.accounts.fungible_token.to_account_info(),
@@ -335,6 +366,7 @@ mod x404 {
             (ctx.accounts.fungible_token.amount / ctx.accounts.state.fungible_supply) as usize
                 - old_sender,
         )?;
+        ctx.accounts.state.nft_in_use -= 1;
 
         msg!("Fungible Token burned successfully.");
 
@@ -348,13 +380,19 @@ mod x404 {
         let state_signer = [seeds.as_ref()];
         transfer_spl_token(
             ctx.accounts.withdrawal_program.to_account_info(),
-            ctx.accounts.withdrawal_nft.to_account_info(),
-            ctx.accounts.withdrawal.to_account_info(),
+            ctx.accounts.withdraw_mint.to_account_info(),
+            ctx.accounts.withdraw_holder.to_account_info(),
             ctx.accounts.withdrawal_receiver.to_account_info(),
             ctx.accounts.state.to_account_info(),
-            ctx.accounts.state.redeem_fee,
-            ctx.accounts.state.decimal,
+            1,
+            0,
             Some(state_signer.as_slice()),
+        )?;
+
+        close_spl_account(
+            ctx.accounts.withdrawal_program.to_account_info(),
+            ctx.accounts.withdraw_holder.to_account_info(),
+            ctx.accounts.state.to_account_info(),
         )?;
 
         Ok(())
@@ -410,7 +448,7 @@ mod x404 {
 
         add_to_owner_store(
             &mut ctx.accounts.owner_store,
-            Rent::from_account_info(&ctx.accounts.rent.to_account_info())?,
+            Rent::get()?,
             ctx.accounts.signer.key(),
             ctx.accounts.bind_mint.key(),
         )?;

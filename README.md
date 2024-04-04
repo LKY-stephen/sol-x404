@@ -11,8 +11,9 @@ cargo build-bpf
 You may run the following command to build the program and run its Rust tests.
 
 ```sh
-cargo test-sbf
+cargo build-bpf
 cp ./spl_token_2022.so ./target/deploy/
 cd tests
 cargo test-sbf
 ```
+

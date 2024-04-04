@@ -13,7 +13,7 @@ solana-program = "1.18.5"
 solana-program-test = "1.18.5"
 solana-sdk = "1.18.5"
 spl-transfer-hook-interface = "0.6.3"
-
+spl-associated-token-account = {version="3.0.2", features=["no-entrypoint"]}
 [[test]]
-name = "intergration"
+name = "functionality_test"
 path = "intergration.rs"
