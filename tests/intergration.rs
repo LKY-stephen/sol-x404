@@ -2,11 +2,14 @@ use std::vec;
 
 use anchor_lang::{AccountDeserialize, Id, Key};
 use anchor_spl::{
+    associated_token::AssociatedToken,
     token::spl_token,
     token_2022::{
-        spl_token_2022::{self, instruction::transfer_checked},
+        self,
+        spl_token_2022::{self, instruction::TokenInstruction},
         Token2022,
     },
+    token_interface::TokenAccount,
 };
 use solana_program::instruction::Instruction;
 use solana_program_test::{
@@ -15,6 +18,7 @@ use solana_program_test::{
 };
 use solana_sdk::{
     account::AccountSharedData,
+    instruction::AccountMeta,
     program_pack::Pack,
     pubkey::Pubkey,
     signature::Keypair,
@@ -41,19 +45,18 @@ const FUNGIBLE_SUPPLY: u64 = 1000;
 #[cfg(test)]
 #[tokio::test]
 async fn functionality_test() {
-    use anchor_spl::token_interface::TokenAccount;
     use x404::state::OwnerStore;
 
     let mut validator = ProgramTest::default();
     validator.add_program("X404", ID, None);
     validator.add_program("X404_HOOK", HookID, None);
-    validator.add_program("spl_token_2022", spl_token_2022::ID, None);
+    // validator.add_program("spl_token_2022", spl_token_2022::ID, None);
     // validator.add_program("metaplex_token_metadata_program", metadata::ID, None);
 
-    let owner = add_account(&mut validator, 100);
+    let owner = add_account(&mut validator, 200);
 
-    let usera = add_account(&mut validator, 5);
-    let userb = add_account(&mut validator, 5);
+    let usera = add_account(&mut validator, 100);
+    let userb = add_account(&mut validator, 100);
 
     let hub_state = add_pda(&[b"hub".as_ref()], ID);
     let source = add_pda(&[b"test_mint".as_ref()], Token2022::id());
@@ -61,6 +64,8 @@ async fn functionality_test() {
     let owner_store = add_pda(&[b"owner_store".as_ref(), x404_state.as_ref()], ID);
     let collection_mint = add_pda(&[b"collection_mint".as_ref(), x404_state.as_ref()], ID);
 
+    println!("state: {x404_state}");
+    println!("owner_store: {owner_store}");
     let nft_token = get_associated_token_address_with_program_id(
         &collection_mint,
         &collection_mint,
@@ -71,6 +76,9 @@ async fn functionality_test() {
 
     let extra_account = get_extra_account_metas_address(&fungible_mint, &HookID);
 
+    println!("fungible_mint: {fungible_mint}");
+
+    println!("extra_account: {extra_account}");
     let mut context = validator.start_with_context().await;
 
     // initiate the hub
@@ -88,11 +96,14 @@ async fn functionality_test() {
     )
     .await;
 
+    println!("user a: {}", usera.pubkey());
+    println!("user b: {}", userb.pubkey());
     let (nft_a, _deposit_a) = test_deposit(
         &mut context,
         source,
         x404_state,
         owner_store,
+        &owner,
         &usera,
         fungible_mint,
         0,
@@ -104,6 +115,7 @@ async fn functionality_test() {
         source,
         x404_state,
         owner_store,
+        &owner,
         &userb,
         fungible_mint,
         1,
@@ -116,6 +128,7 @@ async fn functionality_test() {
         source,
         x404_state,
         owner_store,
+        &owner,
         &userb,
         fungible_mint,
         2,
@@ -123,49 +136,73 @@ async fn functionality_test() {
     .await
     .unwrap();
 
-    print!("check owner store");
+    println!("check owner store");
+    // ======================
+    // a: 1000, nft_a
+    // b: 2000, nft_b, nft_c
     let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
         .await
         .unwrap()
         .get_map();
 
-    assert!(owner_store_data
-        .get(&usera.pubkey())
-        .unwrap()
-        .contains(&nft_a));
-    assert!(owner_store_data
-        .get(&userb.pubkey())
-        .unwrap()
-        .contains(&nft_b));
-    assert!(owner_store_data
-        .get(&userb.pubkey())
-        .unwrap()
-        .contains(&nft_c));
+    let a_balance = get_associated_token_address_with_program_id(
+        &usera.pubkey(),
+        &fungible_mint,
+        &spl_token_2022::ID,
+    );
+    let b_balance = get_associated_token_address_with_program_id(
+        &userb.pubkey(),
+        &fungible_mint,
+        &spl_token_2022::ID,
+    );
+
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![nft_a]
+    );
+
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![nft_b, nft_c]
+    );
+
+    assert_balance(&mut context, a_balance, FUNGIBLE_SUPPLY).await;
+    assert_balance(&mut context, b_balance, FUNGIBLE_SUPPLY * 2).await;
 
     // transfer token
-    println!("transfer fungible token from b to a");
-    test_transfer(&mut context, &userb, &usera, fungible_mint, FUNGIBLE_SUPPLY)
-        .await
-        .unwrap();
-
+    println!("Test Transfer");
+    test_transfer(
+        &mut context,
+        &userb,
+        &usera.pubkey(),
+        fungible_mint,
+        extra_account,
+        x404_state,
+        owner_store,
+        FUNGIBLE_SUPPLY,
+    )
+    .await
+    .unwrap();
+    // ======================
+    // a: 2000, nft_a, nft_c
+    // b: 1000, nft_b,
     let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
         .await
         .unwrap()
         .get_map();
 
-    assert!(owner_store_data
-        .get(&usera.pubkey())
-        .unwrap()
-        .contains(&nft_a));
-    assert!(owner_store_data
-        .get(&userb.pubkey())
-        .unwrap()
-        .contains(&nft_b));
-    // the third token should be moved to user a's account
-    assert!(owner_store_data
-        .get(&usera.pubkey())
-        .unwrap()
-        .contains(&nft_c));
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![nft_a, nft_c]
+    );
+
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![nft_b]
+    );
+
+    assert_balance(&mut context, a_balance, FUNGIBLE_SUPPLY * 2).await;
+    assert_balance(&mut context, b_balance, FUNGIBLE_SUPPLY).await;
 
     let state_data = read_account::<X404State>(&mut context, x404_state)
         .await
@@ -188,51 +225,69 @@ async fn functionality_test() {
     .await
     .unwrap();
 
-    test_transfer(
-        &mut context,
-        &usera,
-        &userb,
-        fungible_mint,
-        FUNGIBLE_SUPPLY / 2,
-    )
-    .await
-    .unwrap();
-
+    // ======================
+    // a: 1000, nft_a,
+    // b: 1000, nft_b,
     let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
         .await
         .unwrap()
         .get_map();
 
-    assert!(owner_store_data.get(&usera.pubkey()).unwrap().len() == 0);
-
-    assert!(owner_store_data
-        .get(&userb.pubkey())
-        .unwrap()
-        .contains(&nft_b));
-    assert!(owner_store_data.get(&x404_state).unwrap().contains(&nft_a));
-
-    let account_a = get_associated_token_address_with_program_id(
-        &usera.pubkey(),
-        &fungible_mint,
-        &spl_token_2022::ID,
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![nft_a]
     );
 
-    let a_balance = read_account::<TokenAccount>(&mut context, account_a)
-        .await
-        .unwrap();
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![nft_b]
+    );
 
-    assert_eq!(a_balance.amount, FUNGIBLE_SUPPLY / 2);
+    assert_balance(&mut context, a_balance, FUNGIBLE_SUPPLY).await;
+    assert_balance(&mut context, b_balance, FUNGIBLE_SUPPLY).await;
 
-    let account_b = get_associated_token_address_with_program_id(
+    test_transfer(
+        &mut context,
+        &usera,
         &userb.pubkey(),
-        &fungible_mint,
-        &spl_token_2022::ID,
-    );
-    let b_balance = read_account::<TokenAccount>(&mut context, account_b)
+        fungible_mint,
+        extra_account,
+        x404_state,
+        owner_store,
+        FUNGIBLE_SUPPLY / 2,
+    )
+    .await
+    .unwrap();
+    // ======================
+    // a:      500,
+    // b:     1500, nft_b,
+    // state:     , nft_a
+    let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
         .await
-        .unwrap();
+        .unwrap()
+        .get_map();
 
-    assert_eq!(b_balance.amount, FUNGIBLE_SUPPLY + FUNGIBLE_SUPPLY / 2);
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![]
+    );
+
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![nft_b]
+    );
+    assert_eq!(
+        owner_store_data.get(&x404_state).unwrap().to_owned(),
+        vec![nft_a]
+    );
+
+    assert_balance(&mut context, a_balance, FUNGIBLE_SUPPLY / 2).await;
+    assert_balance(
+        &mut context,
+        b_balance,
+        FUNGIBLE_SUPPLY / 2 + FUNGIBLE_SUPPLY,
+    )
+    .await;
     // unbind
     test_unbind(
         &mut context,
@@ -246,30 +301,44 @@ async fn functionality_test() {
     )
     .await
     .unwrap();
-
+    // ======================
+    // a:     1500, nft_c
+    // b:     1500, nft_b,
+    // state:     , nft_a
     let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
         .await
         .unwrap()
         .get_map();
 
-    assert!(owner_store_data
-        .get(&usera.pubkey())
-        .unwrap()
-        .contains(&nft_c));
-
-    let account_a = get_associated_token_address_with_program_id(
-        &usera.pubkey(),
-        &fungible_mint,
-        &spl_token_2022::ID,
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![nft_c]
     );
 
-    let a_balance = read_account::<TokenAccount>(&mut context, account_a)
-        .await
-        .unwrap();
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![nft_b]
+    );
+    assert_eq!(
+        owner_store_data.get(&x404_state).unwrap().to_owned(),
+        vec![nft_a]
+    );
 
-    assert_eq!(a_balance.amount, FUNGIBLE_SUPPLY + FUNGIBLE_SUPPLY / 2);
+    assert_balance(
+        &mut context,
+        a_balance,
+        FUNGIBLE_SUPPLY + FUNGIBLE_SUPPLY / 2,
+    )
+    .await;
+    assert_balance(
+        &mut context,
+        b_balance,
+        FUNGIBLE_SUPPLY / 2 + FUNGIBLE_SUPPLY,
+    )
+    .await;
     // redeem
 
+    context.warp_to_epoch(2).unwrap();
     test_redeem(
         &mut context,
         source,
@@ -283,23 +352,80 @@ async fn functionality_test() {
     .await
     .unwrap();
 
-    test_transfer(&mut context, &userb, &usera, fungible_mint, FUNGIBLE_SUPPLY)
-        .await
-        .unwrap();
-
+    // ======================
+    // a:     400,
+    // b:     1600, nft_b,
+    // state:     , nft_a,nft_c
     let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
         .await
         .unwrap()
         .get_map();
 
-    assert!(owner_store_data.get(&usera.pubkey()).unwrap().len() == 0);
-    assert!(owner_store_data
-        .get(&userb.pubkey())
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![]
+    );
+
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![nft_b]
+    );
+    assert_eq!(
+        owner_store_data.get(&x404_state).unwrap().to_owned(),
+        vec![nft_a, nft_c]
+    );
+
+    assert_balance(&mut context, a_balance, FUNGIBLE_SUPPLY / 2 - REDEEMFEE).await;
+    assert_balance(
+        &mut context,
+        b_balance,
+        FUNGIBLE_SUPPLY / 2 + FUNGIBLE_SUPPLY + REDEEMFEE,
+    )
+    .await;
+
+    test_transfer(
+        &mut context,
+        &userb,
+        &usera.pubkey(),
+        fungible_mint,
+        extra_account,
+        x404_state,
+        owner_store,
+        FUNGIBLE_SUPPLY,
+    )
+    .await
+    .unwrap();
+
+    // ======================
+    // a:     1400, nft_b
+    // b:      600,
+    // state:     , nft_a,nft_c
+    let owner_store_data = read_account::<OwnerStore>(&mut context, owner_store)
+        .await
         .unwrap()
-        .contains(&nft_b));
-    // both  and c should be in store
-    assert!(owner_store_data.get(&x404_state).unwrap().contains(&nft_c));
-    assert!(owner_store_data.get(&x404_state).unwrap().contains(&nft_a));
+        .get_map();
+
+    assert_eq!(
+        owner_store_data.get(&usera.pubkey()).unwrap().to_owned(),
+        vec![nft_b]
+    );
+
+    assert_eq!(
+        owner_store_data.get(&userb.pubkey()).unwrap().to_owned(),
+        vec![]
+    );
+    assert_eq!(
+        owner_store_data.get(&x404_state).unwrap().to_owned(),
+        vec![nft_a, nft_c]
+    );
+
+    assert_balance(
+        &mut context,
+        a_balance,
+        FUNGIBLE_SUPPLY + FUNGIBLE_SUPPLY / 2 - REDEEMFEE,
+    )
+    .await;
+    assert_balance(&mut context, b_balance, FUNGIBLE_SUPPLY / 2 + REDEEMFEE).await;
 
     let state_data = read_account::<X404State>(&mut context, x404_state)
         .await
@@ -307,20 +433,6 @@ async fn functionality_test() {
 
     assert_eq!(state_data.nft_supply, 3);
     assert_eq!(state_data.nft_in_use, 2);
-
-    let a_balance = read_account::<TokenAccount>(&mut context, account_a)
-        .await
-        .unwrap();
-
-    assert_eq!(a_balance.amount, FUNGIBLE_SUPPLY / 2 - REDEEMFEE);
-    let b_balance = read_account::<TokenAccount>(&mut context, account_b)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        b_balance.amount,
-        FUNGIBLE_SUPPLY + FUNGIBLE_SUPPLY / 2 + REDEEMFEE
-    );
 }
 
 fn add_account(validator: &mut ProgramTest, amount: u64) -> Keypair {
@@ -499,8 +611,20 @@ async fn test_init(
     assert_eq!(state_data.fungible_hook, extra_account);
     assert_eq!(state_data.nft_supply, 0);
 
-    // add additional rent to state for future minting
-    transfer_lamports(&mut context, owner, x404_state, 5_000_000)
+    let fungible_mint_data = context
+        .banks_client
+        .get_account(fungible_mint)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(fungible_mint_data.owner, token_2022::ID);
+
+    // add additional rent to owner_store and fungible mint
+    transfer_lamports(&mut context, owner, owner_store, 1_000_000_000)
+        .await
+        .unwrap();
+    transfer_lamports(&mut context, owner, fungible_mint, 1_000_000_000)
         .await
         .unwrap();
     // initiate extra account
@@ -549,6 +673,7 @@ async fn test_deposit(
     source: Pubkey,
     x404_state: Pubkey,
     owner_store: Pubkey,
+    owner: &Keypair,
     user: &Keypair,
     fungible_mint: Pubkey,
     supply: u64,
@@ -570,8 +695,6 @@ async fn test_deposit(
         ],
         ID,
     );
-    let nft_token =
-        get_associated_token_address_with_program_id(&x404_state, &nft_mint, &spl_token_2022::ID);
 
     let fungible_token = get_associated_token_address_with_program_id(
         &user.pubkey(),
@@ -583,15 +706,10 @@ async fn test_deposit(
         1,
         source,
         x404_state,
-        owner_store,
         deposit_mint,
         deposit_holder,
         deposit_receiver,
         nft_bank,
-        nft_mint,
-        nft_token,
-        fungible_mint,
-        fungible_token,
         user.pubkey(),
     );
 
@@ -599,42 +717,69 @@ async fn test_deposit(
         .await
         .unwrap();
 
+    let issue_toke_instruction = x404::instructions::issue_token(
+        source,
+        x404_state,
+        owner_store,
+        nft_bank,
+        nft_mint,
+        fungible_mint,
+        fungible_token,
+        user.pubkey(),
+        owner.pubkey(),
+    );
+
+    execute(context, owner, &[issue_toke_instruction], vec![user, owner])
+        .await
+        .unwrap();
     println!("accomplished deposit {deposit_mint}");
     Ok((nft_mint, deposit_mint))
 }
 
 async fn test_transfer(
     context: &mut ProgramTestContext,
-    usera: &Keypair,
-    userb: &Keypair,
+    sender: &Keypair,
+    receiver: &Pubkey,
     fungible_mint: Pubkey,
+    extra_account: Pubkey,
+    state: Pubkey,
+    owner_store: Pubkey,
     amount: u64,
 ) -> Result<(), BanksClientError> {
     println!("start to transfer {amount}");
-    let usera_account = get_associated_token_address_with_program_id(
-        &usera.pubkey(),
+    let source = get_associated_token_address_with_program_id(
+        &sender.pubkey(),
         &fungible_mint,
         &spl_token_2022::ID,
     );
-    let userb_account = get_associated_token_address_with_program_id(
-        &userb.pubkey(),
-        &fungible_mint,
-        &spl_token_2022::ID,
-    );
+    let destination =
+        get_associated_token_address_with_program_id(receiver, &fungible_mint, &spl_token_2022::ID);
 
-    let transfer_instruction = transfer_checked(
-        &spl_token_2022::ID,
-        &usera_account,
-        &fungible_mint,
-        &userb_account,
-        &usera.pubkey(),
-        &[&usera.pubkey()],
-        amount,
-        DECIMALS,
-    )
-    .unwrap();
+    let transfer_instruction = Instruction {
+        program_id: spl_token_2022::ID,
+        accounts: vec![
+            AccountMeta::new(source, false),
+            AccountMeta::new(fungible_mint, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new(sender.pubkey(), true),
+            AccountMeta::new_readonly(state, false),
+            AccountMeta::new(owner_store, false),
+            AccountMeta::new_readonly(AssociatedToken::id(), false),
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(Token2022::id(), false),
+            AccountMeta::new_readonly(HookID, false),
+            AccountMeta::new_readonly(extra_account, false),
+        ],
+        data: TokenInstruction::TransferChecked {
+            amount,
+            decimals: DECIMALS,
+        }
+        .pack(),
+    };
 
-    execute(context, &usera, &[transfer_instruction], vec![&usera])
+    println!("sender account: {}", source);
+    println!("receiver account: {}", destination);
+    execute(context, &sender, &[transfer_instruction], vec![&sender])
         .await
         .unwrap();
 
@@ -654,8 +799,7 @@ async fn test_bind(
     number: u64,
 ) -> Result<(), BanksClientError> {
     println!("start to bind NFT-{number} for {source}");
-    let bind_holder =
-        get_associated_token_address_with_program_id(&x404_state, &bind_mint, &spl_token_2022::ID);
+
     let bind_receiver = get_associated_token_address_with_program_id(
         &user.pubkey(),
         &bind_mint,
@@ -674,7 +818,6 @@ async fn test_bind(
         x404_state,
         owner_store,
         bind_mint,
-        bind_holder,
         bind_receiver,
         fungible_mint,
         fungible_account,
@@ -693,19 +836,17 @@ async fn test_unbind(
     source: Pubkey,
     x404_state: Pubkey,
     owner_store: Pubkey,
-    bind_mint: Pubkey,
+    unbind_mint: Pubkey,
     user: &Keypair,
     fungible_mint: Pubkey,
     number: u64,
 ) -> Result<(), BanksClientError> {
-    println!("start to unbind {bind_mint} for {source}");
+    println!("start to unbind {unbind_mint} for {source}");
     let unbind_holder = get_associated_token_address_with_program_id(
         &user.pubkey(),
-        &bind_mint,
+        &unbind_mint,
         &spl_token_2022::ID,
     );
-    let unbind_receiver =
-        get_associated_token_address_with_program_id(&x404_state, &bind_mint, &spl_token_2022::ID);
 
     let fungible_account = get_associated_token_address_with_program_id(
         &user.pubkey(),
@@ -718,9 +859,8 @@ async fn test_unbind(
         source,
         x404_state,
         owner_store,
-        bind_mint,
+        unbind_mint,
         unbind_holder,
-        unbind_receiver,
         fungible_mint,
         fungible_account,
         user.pubkey(),
@@ -730,7 +870,7 @@ async fn test_unbind(
         .await
         .unwrap();
 
-    println!("accomplish unbind {bind_mint} for {source}");
+    println!("accomplish unbind {unbind_mint} for {source}");
     Ok(())
 }
 
@@ -787,4 +927,12 @@ async fn test_redeem(
 
     println!("accomplished redeem {withdraw_mint}");
     Ok(())
+}
+
+async fn assert_balance(mut context: &mut ProgramTestContext, account: Pubkey, expected: u64) {
+    let balance = read_account::<TokenAccount>(&mut context, account)
+        .await
+        .unwrap();
+
+    assert_eq!(balance.amount, expected);
 }

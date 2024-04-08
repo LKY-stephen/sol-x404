@@ -8,7 +8,8 @@ use anchor_spl::{
     token_interface::{Mint, TokenAccount},
 };
 
-pub const BANK_SIZE: usize = 8 + 8 + 32 + 32;
+pub const BANK_SIZE: usize = 8 + 8 + 32 + 32 + 1;
+pub const X404_STATE_SIZE: usize = 8 + 32 + 8 + 8 + 32 + 1 + 32 + 32 + 32 + 8 + 8 + 8;
 
 // validate incoming accounts here
 #[account]
@@ -27,6 +28,8 @@ pub struct NFTBank {
     pub redeem_deadline: u64,
     // owner of this NFT
     pub owner: Pubkey,
+    // If the corresponding tokens are issued
+    pub issued: bool,
 }
 
 #[account]
@@ -102,7 +105,7 @@ pub struct CreateX404<'info> {
     #[account(
         init,
         payer = signer,
-        space = 8 + 32 + 8 + 8 + 32 + 1 + 32 + 32 + 32 + 8 + 8 + 8,
+        space = X404_STATE_SIZE,
         seeds = [b"state".as_ref(), source.to_account_info().key.as_ref()],
         bump,
     )]
@@ -112,7 +115,7 @@ pub struct CreateX404<'info> {
         payer = signer,
         seeds = [b"owner_store".as_ref(), state.to_account_info().key.as_ref()],
         bump,
-        space = 8 + 4
+        space = 8 + 4 + 4,
     )]
     pub owner_store: Box<Account<'info, OwnerStore>>,
     #[account(
@@ -121,7 +124,7 @@ pub struct CreateX404<'info> {
         seeds = [b"collection_mint".as_ref(), state.to_account_info().key.as_ref()],
         bump,
         mint::decimals = 0,
-        mint::authority = collection_mint,
+        mint::authority = state,
         mint::token_program = token_program,
     )]
     pub collection_mint: InterfaceAccount<'info, Mint>,
@@ -176,17 +179,11 @@ pub struct DepositSPLNFT<'info> {
         seeds = [b"state".as_ref(), params.source.as_ref()],
         bump,)]
     pub state: Box<Account<'info, X404State>>,
-    #[account(
-        mut,
-        seeds = [b"owner_store".as_ref(), state.to_account_info().key.as_ref()],
-        bump,
-    )]
-    pub owner_store: Box<Account<'info, OwnerStore>>,
     pub deposit_mint: Box<Account<'info, SPLMint>>,
     #[account(mut,
         associated_token::mint = deposit_mint,
         associated_token::authority = signer,
-        associated_token::token_program = deposit_program,
+        associated_token::token_program = token_program,
     )]
     pub deposit_holder: Box<Account<'info, SPLTokenAccount>>,
     #[account(
@@ -194,7 +191,7 @@ pub struct DepositSPLNFT<'info> {
         payer = signer,
         associated_token::mint = deposit_mint,
         associated_token::authority = state,
-        associated_token::token_program = deposit_program,
+        associated_token::token_program = token_program,
     )]
     pub deposit_receiver: Box<Account<'info, SPLTokenAccount>>,
     #[account(
@@ -205,30 +202,57 @@ pub struct DepositSPLNFT<'info> {
         space = BANK_SIZE,
     )]
     pub nft_bank: Box<Account<'info, NFTBank>>,
-    // We do not init this mint in all cases, so we need to init is in program
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(params:IssueTokenParams)]
+pub struct IssueTokens<'info> {
     #[account(
-        seeds = [b"nft_mint".as_ref(),state.to_account_info().key.as_ref(), state.nft_supply.to_le_bytes().as_ref()],
+        mut,
+        seeds = [b"state".as_ref(), params.source.as_ref()],
+        bump,)]
+    pub state: Box<Account<'info, X404State>>,
+    #[account(mut)]
+    pub nft_bank: Box<Account<'info, NFTBank>>,
+    #[account(
+        mut,
+        seeds = [b"owner_store".as_ref(), state.to_account_info().key.as_ref()],
         bump,
     )]
-    pub nft_mint: AccountInfo<'info>,
-    // CHECKED: This is the associated token account for the NFT mint with authroity state
-    pub nft_token: AccountInfo<'info>,
+    pub owner_store: Box<Account<'info, OwnerStore>>,
+    #[account(
+        init_if_needed,
+        payer = owner,
+        seeds = [b"nft_mint".as_ref(),state.to_account_info().key.as_ref(), state.nft_supply.to_le_bytes().as_ref()],
+        bump,
+        mint::decimals = 0,
+        mint::authority = state,
+    )]
+    pub nft_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
         seeds = [b"fungible_mint".as_ref(), state.to_account_info().key.as_ref()],
         bump,
+        mint::authority = state,
+        mint::token_program = token_program,
     )]
-    pub fungible_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub fungible_mint: InterfaceAccount<'info, Mint>,
     #[account(
         init_if_needed,
-        payer = signer,
+        payer = user,
         associated_token::mint = fungible_mint,
-        associated_token::authority = signer,
+        associated_token::authority = user,
     )]
-    pub fungible_token: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub fungible_token: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
-    pub signer: Signer<'info>,
-    pub deposit_program: Program<'info, Token>,
+    pub user: AccountInfo<'info>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
     pub token_program: Program<'info, Token2022>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -257,20 +281,16 @@ pub struct BindNFT<'info> {
     )]
     pub bind_mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
-        mut,
-        associated_token::mint = bind_mint,
-        associated_token::authority = state,
-    )]
-    pub bind_holder: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(
         init_if_needed,
         payer = signer,
         associated_token::mint = bind_mint,
         associated_token::authority = signer,
+        associated_token::token_program = token_program,
     )]
     pub bind_token: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    #[account(mut,
+    #[account(
+        mut,
         seeds = [b"fungible_mint".as_ref(), state.to_account_info().key.as_ref()],
         bump,
     )]
@@ -280,6 +300,7 @@ pub struct BindNFT<'info> {
         payer = signer,
         associated_token::mint = fungible_mint,
         associated_token::authority = signer,
+        associated_token::token_program = token_program,
     )]
     pub fungible_token: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
@@ -310,19 +331,14 @@ pub struct UnbindNFT<'info> {
         seeds = [b"nft_mint".as_ref(),state.to_account_info().key.as_ref(), params.number.to_le_bytes().as_ref()],
         bump,
     )]
-    pub bind_mint: InterfaceAccount<'info, Mint>,
+    pub unbind_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
-        associated_token::mint = bind_mint,
-        associated_token::authority = state,
-    )]
-    pub bind_token: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
-        associated_token::mint = bind_mint,
+        associated_token::mint = unbind_mint,
         associated_token::authority = signer,
+        associated_token::token_program = token_program,
     )]
-    pub bind_receiver: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub unbind_holder: InterfaceAccount<'info, TokenAccount>,
 
     #[account(mut,
         seeds = [b"fungible_mint".as_ref(), state.to_account_info().key.as_ref()],
@@ -334,6 +350,7 @@ pub struct UnbindNFT<'info> {
         payer = signer,
         associated_token::mint = fungible_mint,
         associated_token::authority = signer,
+        associated_token::token_program = token_program,
     )]
     pub fungible_token: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
@@ -357,26 +374,25 @@ pub struct Rebalance<'info> {
     )]
     pub owner_store: Box<Account<'info, OwnerStore>>,
     #[account(
-        mut,
         seeds = [b"fungible_mint".as_ref(),state.to_account_info().key.as_ref()],
         bump,
     )]
     pub fungible_mint: InterfaceAccount<'info, Mint>,
     #[account(
-        mut,
         associated_token::mint = fungible_mint,
         associated_token::authority = params.sender,
+        associated_token::token_program = token_program,
     )]
     pub sender_account: InterfaceAccount<'info, TokenAccount>,
     #[account(
-        mut,
         associated_token::mint = fungible_mint,
         associated_token::authority = params.receiver,
+        associated_token::token_program = token_program,
     )]
     pub receiver_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(signer)]
     pub hooker: AccountInfo<'info>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_program: Program<'info, Token2022>,
 }
 
 #[derive(Accounts)]
@@ -485,6 +501,12 @@ pub struct DepositParams {
     pub source: Pubkey,
     // dead line for redeem
     pub redeem_deadline: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Debug, Clone)]
+pub struct IssueTokenParams {
+    //pubkey of source
+    pub source: Pubkey,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Debug, Clone)]

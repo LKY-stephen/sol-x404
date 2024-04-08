@@ -1,6 +1,6 @@
 use crate::{
-    instruction, DepositParams, InitCollectionParams, InitTokenParams, RebalanceParams,
-    RedeemParams, UnbindParams, ID,
+    instruction, DepositParams, InitCollectionParams, InitTokenParams, IssueTokenParams,
+    RebalanceParams, RedeemParams, UnbindParams, ID,
 };
 use anchor_lang::{prelude::*, system_program, InstructionData};
 use anchor_spl::{
@@ -59,7 +59,7 @@ pub fn create_x404(
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(signer, true),
             // token
-            AccountMeta::new_readonly(anchor_spl::token_2022::ID, false),
+            AccountMeta::new_readonly(token_2022::ID, false),
             // system
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -106,15 +106,10 @@ pub fn deposit_spl_nft(
     redeem_deadline: u64,
     source: Pubkey,
     state: Pubkey,
-    owner_store: Pubkey,
     deposit_mint: Pubkey,
     deposit_holder: Pubkey,
     deposit_receiver: Pubkey,
     nft_bank: Pubkey,
-    nft_mint: Pubkey,
-    nft_token: Pubkey,
-    fungible_mint: Pubkey,
-    fungible_token: Pubkey,
     signer: Pubkey,
 ) -> Instruction {
     let data = instruction::Deposit {
@@ -128,18 +123,47 @@ pub fn deposit_spl_nft(
         &data.data(),
         vec![
             AccountMeta::new(state, false),
-            AccountMeta::new(owner_store, false),
             AccountMeta::new_readonly(deposit_mint, false),
             AccountMeta::new(deposit_holder, false),
             AccountMeta::new(deposit_receiver, false),
             AccountMeta::new(nft_bank, false),
-            AccountMeta::new(nft_mint, false),
-            AccountMeta::new(nft_token, false),
-            AccountMeta::new(fungible_mint, false),
-            AccountMeta::new(fungible_token, false),
             AccountMeta::new(signer, true),
             // token
             AccountMeta::new_readonly(token::ID, false),
+            // ata
+            AccountMeta::new_readonly(associated_token::ID, false),
+            // system
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+    )
+}
+
+pub fn issue_token(
+    source: Pubkey,
+    state: Pubkey,
+    owner_store: Pubkey,
+    nft_bank: Pubkey,
+    nft_mint: Pubkey,
+    fungible_mint: Pubkey,
+    fungible_token: Pubkey,
+    user: Pubkey,
+    owner: Pubkey,
+) -> Instruction {
+    let data = instruction::IssueToken {
+        params: IssueTokenParams { source },
+    };
+    Instruction::new_with_bytes(
+        ID,
+        &data.data(),
+        vec![
+            AccountMeta::new(state, false),
+            AccountMeta::new(nft_bank, false),
+            AccountMeta::new(owner_store, false),
+            AccountMeta::new(nft_mint, false),
+            AccountMeta::new(fungible_mint, false),
+            AccountMeta::new(fungible_token, false),
+            AccountMeta::new(user, true),
+            AccountMeta::new(owner, true),
             // token
             AccountMeta::new_readonly(token_2022::ID, false),
             // ata
@@ -198,7 +222,6 @@ pub fn bind(
     state: Pubkey,
     owner_store: Pubkey,
     bind_mint: Pubkey,
-    bind_holder: Pubkey,
     bind_receiver: Pubkey,
     fungible_mint: Pubkey,
     fungible_token: Pubkey,
@@ -214,7 +237,6 @@ pub fn bind(
             AccountMeta::new(state, false),
             AccountMeta::new(owner_store, false),
             AccountMeta::new(bind_mint, false),
-            AccountMeta::new(bind_holder, false),
             AccountMeta::new(bind_receiver, false),
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(fungible_token, false),
@@ -234,15 +256,14 @@ pub fn unbind(
     source: Pubkey,
     state: Pubkey,
     owner_store: Pubkey,
-    bind_mint: Pubkey,
-    bind_holder: Pubkey,
-    bind_receiver: Pubkey,
+    unbind_mint: Pubkey,
+    unbind_holder: Pubkey,
     fungible_mint: Pubkey,
     fungible_token: Pubkey,
     signer: Pubkey,
 ) -> Instruction {
     let data = instruction::UnbindNft {
-        _params: UnbindParams { source, number },
+        params: UnbindParams { source, number },
     };
     Instruction::new_with_bytes(
         ID,
@@ -250,9 +271,8 @@ pub fn unbind(
         vec![
             AccountMeta::new(state, false),
             AccountMeta::new(owner_store, false),
-            AccountMeta::new(bind_mint, false),
-            AccountMeta::new(bind_holder, false),
-            AccountMeta::new(bind_receiver, false),
+            AccountMeta::new(unbind_mint, false),
+            AccountMeta::new(unbind_holder, false),
             AccountMeta::new(fungible_mint, false),
             AccountMeta::new(fungible_token, false),
             AccountMeta::new(signer, true),
@@ -288,14 +308,16 @@ pub fn rebalance(
         ID,
         &data.data(),
         vec![
-            AccountMeta::new(state, false),
+            AccountMeta::new_readonly(state, false),
             AccountMeta::new(owner_store, false),
-            AccountMeta::new(fungible_mint, false),
-            AccountMeta::new(sender_token, false),
-            AccountMeta::new(receiver_token, false),
-            AccountMeta::new(hook, true),
+            AccountMeta::new_readonly(fungible_mint, false),
+            AccountMeta::new_readonly(sender_token, false),
+            AccountMeta::new_readonly(receiver_token, false),
+            AccountMeta::new_readonly(hook, true),
             // ata
             AccountMeta::new_readonly(associated_token::ID, false),
+            // token
+            AccountMeta::new_readonly(token_2022::ID, false),
         ],
     )
 }

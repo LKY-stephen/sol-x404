@@ -19,4 +19,4 @@ solana-program = "=1.18.5"
 spl-tlv-account-resolution = "0.6.3"
 spl-transfer-hook-interface = "0.6.3"
 x404= {path="../x404",features=["no-entrypoint"]}
-
+bytemuck = "1.15.0"

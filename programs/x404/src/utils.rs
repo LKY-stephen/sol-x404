@@ -1,61 +1,43 @@
+use std::cmp::min;
+
 use anchor_lang::{
     context::CpiContext,
     prelude::*,
     system_program::{create_account, CreateAccount},
 };
 use anchor_spl::{
-    associated_token::{create, Create},
     token::{
-        close_account, transfer_checked as spl_transfer_checked, CloseAccount,
-        TransferChecked as SPLTransferChecked,
+        close_account as spl_close_account, transfer_checked as spl_transfer_checked,
+        CloseAccount as CloseSPLAccount, TransferChecked as SPLTransferChecked,
     },
     token_2022::{
-        burn, initialize_mint2, mint_to, set_authority,
-        spl_token_2022::{instruction::AuthorityType, state::Mint},
-        transfer_checked, Burn, InitializeMint2, MintTo, SetAuthority, TransferChecked,
+        burn, close_account, initialize_mint2, mint_to, Burn, CloseAccount, InitializeMint2, MintTo,
     },
+    token_interface::Mint,
 };
-use solana_program::program_pack::Pack;
 
 use crate::{error::SolX404Error, OwnerStore};
 
-pub(crate) const MINT_SIZE: u64 = Mint::LEN as u64;
-
 pub(crate) fn mint_nft<'info>(
     token_program: AccountInfo<'info>,
-    nft_mint: AccountInfo<'info>,
+    nft_mint: &mut InterfaceAccount<'info, Mint>,
     to: AccountInfo<'info>,
     current_mint_authority: AccountInfo<'info>,
     nft_signer: &[&[&[u8]]],
 ) -> Result<()> {
+    require_eq!(nft_mint.supply, 0, SolX404Error::NFTAlreadyMinted);
     require!(
         mint_token(
-            token_program.clone(),
-            nft_mint.clone(),
-            to.clone(),
+            token_program,
+            nft_mint.to_account_info(),
+            to,
             1,
-            current_mint_authority.clone(),
+            current_mint_authority,
             nft_signer,
         )
         .is_ok(),
         SolX404Error::FailedToMintNFT
     );
-
-    msg!("Close NFT Account.");
-    let close_context = CpiContext::new_with_signer(
-        token_program,
-        SetAuthority {
-            account_or_mint: nft_mint.clone(),
-            current_authority: current_mint_authority,
-        },
-        nft_signer,
-    );
-
-    require!(
-        set_authority(close_context, AuthorityType::MintTokens, None).is_ok(),
-        SolX404Error::FailedToCloseMint
-    );
-
     Ok(())
 }
 
@@ -68,11 +50,11 @@ pub(crate) fn mint_token<'info>(
     authority_seeds: &[&[&[u8]]],
 ) -> Result<()> {
     let cpi_context = CpiContext::new_with_signer(
-        token_program.clone(),
+        token_program,
         MintTo {
-            mint: mint.clone(),
+            mint: mint,
             to,
-            authority: mint_authority.clone(),
+            authority: mint_authority,
         },
         authority_seeds,
     );
@@ -88,11 +70,11 @@ pub(crate) fn burn_token<'info>(
     signer: AccountInfo<'info>,
 ) -> Result<()> {
     let cpi_context = CpiContext::new(
-        token_program.clone(),
+        token_program,
         Burn {
-            mint: mint.clone(),
+            mint: mint,
             from,
-            authority: signer.clone(),
+            authority: signer,
         },
     );
 
@@ -107,7 +89,7 @@ pub(crate) fn transfer_spl_token<'info>(
     authority: AccountInfo<'info>,
     amount: u64,
     decimal: u8,
-    signer: Option<&[&[&[u8]]]>,
+    seeds: &[&[&[u8]]],
 ) -> Result<()> {
     let cpi_context = CpiContext::new_with_signer(
         token_program.clone(),
@@ -117,7 +99,7 @@ pub(crate) fn transfer_spl_token<'info>(
             to,
             authority,
         },
-        signer.unwrap_or(&[]),
+        seeds,
     );
 
     spl_transfer_checked(cpi_context, amount, decimal)
@@ -127,55 +109,50 @@ pub(crate) fn close_spl_account<'info>(
     program: AccountInfo<'info>,
     target: AccountInfo<'info>,
     authority: AccountInfo<'info>,
+    seeds: &[&[&[u8]]],
 ) -> Result<()> {
-    let cpi_context = CpiContext::new(
+    let cpi_context = CpiContext::new_with_signer(
+        program,
+        CloseSPLAccount {
+            account: target,
+            authority: authority.clone(),
+            destination: authority,
+        },
+        seeds,
+    );
+
+    spl_close_account(cpi_context)
+}
+
+pub(crate) fn close_token_account<'info>(
+    program: AccountInfo<'info>,
+    target: AccountInfo<'info>,
+    authority: AccountInfo<'info>,
+    seeds: &[&[&[u8]]],
+) -> Result<()> {
+    let cpi_context = CpiContext::new_with_signer(
         program,
         CloseAccount {
             account: target,
             authority: authority.clone(),
             destination: authority,
         },
+        seeds,
     );
 
     close_account(cpi_context)
 }
 
-pub(crate) fn transfer_token<'info>(
-    token_program: AccountInfo<'info>,
-    mint: AccountInfo<'info>,
-    from: AccountInfo<'info>,
-    to: AccountInfo<'info>,
-    authority: AccountInfo<'info>,
-    amount: u64,
-    decimal: u8,
-    signer: Option<&[&[&[u8]]]>,
-) -> Result<()> {
-    let cpi_context = CpiContext::new_with_signer(
-        token_program.clone(),
-        TransferChecked {
-            mint,
-            from,
-            to,
-            authority,
-        },
-        signer.unwrap_or(&[]),
-    );
-
-    transfer_checked(cpi_context, amount, decimal)
-}
-
 pub(crate) fn add_to_owner_store(
     account: &mut Account<'_, OwnerStore>,
-    rent: Rent,
     target: Pubkey,
     owner: Pubkey,
 ) -> Result<()> {
     let mut map = account.get_map();
     map.entry(owner).or_insert_with(Vec::new).push(target);
-
-    let new_store = map.try_to_vec()?;
-    // add rent
-    account.add_lamports(rent.minimum_balance(new_store.len() - account.store.len()))?;
+    // add rent,
+    let new_len = map.try_to_vec()?.len() + 4 + 8;
+    account.to_account_info().realloc(new_len, false)?;
     account.update_map(&map);
 
     Ok(())
@@ -195,10 +172,12 @@ pub(crate) fn transfer_from_owner_store(
     let record = map.entry(owner).or_insert_with(Vec::new);
     require!(record.len() >= amount, SolX404Error::InsufficientNFT);
 
-    let mut tail = record.split_off(amount);
-    let target = map.entry(to).or_insert(vec![]);
+    let mut tail = record.split_off(record.len() - amount);
+    let target = map.entry(to).or_insert_with(Vec::new);
     target.append(&mut tail);
 
+    let new_len = map.try_to_vec()?.len() + 4 + 8;
+    account.to_account_info().realloc(new_len, false)?;
     account.update_map(&map);
 
     Ok(())
@@ -240,7 +219,6 @@ pub(crate) fn create_new_account<'info>(
         },
     )
     .with_signer(signer.as_slice());
-    // fixed mint size in token2022
 
     create_account(init_ctx, rent.minimum_balance(space as usize), space, owner)?;
 
@@ -250,6 +228,7 @@ pub(crate) fn create_new_account<'info>(
 pub(crate) fn initiate_mint_account<'info>(
     token_program: AccountInfo<'info>,
     mint_account: AccountInfo<'info>,
+    authority: AccountInfo<'info>,
     decimal: u8,
 ) -> Result<()> {
     let init_mint_ctx = CpiContext::new(
@@ -259,33 +238,25 @@ pub(crate) fn initiate_mint_account<'info>(
         },
     );
 
-    initialize_mint2(init_mint_ctx, decimal, &mint_account.key, None)?;
+    initialize_mint2(init_mint_ctx, decimal, &authority.key, None)?;
     Ok(())
 }
 
-pub(crate) fn create_token_account<'info>(
-    ata_program: AccountInfo<'info>,
-    token_program: AccountInfo<'info>,
-    system_program: AccountInfo<'info>,
-    payer: AccountInfo<'info>,
-    authority: AccountInfo<'info>,
-    mint: AccountInfo<'info>,
-    account: AccountInfo<'info>,
-    signer_seed: &[&[u8]],
+pub(crate) fn do_rebalance<'info>(
+    owner_store: &mut Account<'info, OwnerStore>,
+    sender: Pubkey,
+    receiver: Pubkey,
+    state: Pubkey,
+    to_add: usize,
+    to_remove: usize,
 ) -> Result<()> {
-    let signer = [signer_seed];
-    let init_token_ctx = CpiContext::new(
-        ata_program,
-        Create {
-            payer,
-            associated_token: account,
-            mint,
-            authority,
-            system_program,
-            token_program,
-        },
-    )
-    .with_signer(&signer);
-    create(init_token_ctx)?;
+    if to_add > to_remove {
+        transfer_from_owner_store(owner_store, state, receiver, to_add - to_remove)?;
+    } else {
+        transfer_from_owner_store(owner_store, sender, state, to_remove - to_add)?;
+    }
+    transfer_from_owner_store(owner_store, sender, receiver, min(to_add, to_remove))?;
+
+    msg!("rebalance accomplished");
     Ok(())
 }

@@ -3,15 +3,14 @@ use anchor_lang::{
     system_program::{self, create_account, CreateAccount}, InstructionData,
 };
 use anchor_spl::{
-    associated_token::AssociatedToken,
-    token_interface::{Mint, TokenAccount},
+    associated_token::AssociatedToken, token_2022::Token2022, token_interface::{Mint, TokenAccount}
 };
 use solana_program::instruction::Instruction;
 use spl_tlv_account_resolution::{
     account::ExtraAccountMeta, state::ExtraAccountMetaList,
 };
 use spl_transfer_hook_interface::instruction::{ExecuteInstruction, TransferHookInstruction};
-use x404::state::{OwnerStore, X404State};
+use x404::{program::X404, state::{OwnerStore, X404State}};
 
 // transfer-hook program that charges a SOL fee on token transfer
 // use a delegate and wrapped SOL because signers from initial transfer are not accessible
@@ -21,6 +20,8 @@ declare_id!("6uCDZftnA5YaTmqv3PnGSQSomFpnrtvkrk2xQSHrvNgh");
 #[program]
 #[cfg(not(feature = "no-entrypoint"))]
 pub mod transfer_hook {
+
+    use std::ops::Deref;
 
     use solana_program::program::invoke_signed;
     use x404::instructions::rebalance;
@@ -36,13 +37,24 @@ pub mod transfer_hook {
             // index 5, 404 state
             ExtraAccountMeta::new_with_pubkey(&ctx.accounts.state.key(), false, false)?,
             // index 6, 404 owner store
-            ExtraAccountMeta::new_with_pubkey(&ctx.accounts.owner_store.key(), false, false)?,
+            ExtraAccountMeta::new_with_pubkey(&ctx.accounts.owner_store.key(), false, true)?,
             // index 7, associated token program
             ExtraAccountMeta::new_with_pubkey(
                 &ctx.accounts.associated_token_program.key(),
                 false,
                 false,
             )?,
+            // index 8, associated token program
+            ExtraAccountMeta::new_with_pubkey(
+                &ctx.accounts.x404_program.key(),
+                false,
+                false,
+            )?,
+            // index 9, token program
+            ExtraAccountMeta::new_with_pubkey(
+                &ctx.accounts.token_program.key(),
+                false,
+                false,)?,
         ];
 
         // calculate account size
@@ -82,24 +94,22 @@ pub mod transfer_hook {
     }
 
     pub fn transfer_hook(ctx: Context<TransferHook>, amount: u64) -> Result<()> {
-       let mint_key = ctx.accounts.mint.key().clone();
-       let signer_seeds: &[&[&[u8]]] = &[&[b"extra-account-metas",mint_key.as_ref(), &[ctx.bumps.extra_account_meta_list]]];
-       msg!("Rebalance the state");
-
-        // transfer WSOL from sender to delegate token account using delegate PDA
-        
+        let mint_key = ctx.accounts.mint.key();
+        let signer_seeds: &[&[&[u8]]] = &[&[b"extra-account-metas",mint_key.as_ref(), &[ctx.bumps.extra_account_meta_list]]];
+        msg!("Rebalance the state"); 
+       
         let instruction = rebalance(
             ctx.accounts.state.key(),
             ctx.accounts.owner_store.key(),
-            ctx.accounts.source_token.owner.key(),
-            ctx.accounts.destination_token.owner.key(),
+            ctx.accounts.source_token.deref().owner,
+            ctx.accounts.destination_token.deref().owner,
             amount,
             mint_key,
             ctx.accounts.source_token.key(),
             ctx.accounts.destination_token.key(),
             ctx.accounts.extra_account_meta_list.key());
 
-         invoke_signed(&instruction, 
+            invoke_signed(&instruction, 
             &[
             ctx.accounts.state.to_account_info(),
             ctx.accounts.owner_store.to_account_info(),
@@ -107,7 +117,8 @@ pub mod transfer_hook {
             ctx.accounts.source_token.to_account_info(),
             ctx.accounts.destination_token.to_account_info(),
             ctx.accounts.extra_account_meta_list.to_account_info(),
-            ctx.accounts.associated_token_program.to_account_info(), ],
+            ctx.accounts.associated_token_program.to_account_info(),
+            ctx.accounts.token_program.to_account_info(), ],
             signer_seeds)?;
 
         Ok(())
@@ -150,6 +161,8 @@ pub struct InitializeExtraAccountMetaList<'info> {
     pub state: Account<'info, X404State>,
     pub owner_store: Account<'info, OwnerStore>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub x404_program: Program<'info, X404>,
+    pub token_program: Program<'info, Token2022>,
     pub system_program: Program<'info, System>,
 }
 
@@ -169,7 +182,7 @@ pub struct TransferHook<'info> {
         token::mint = mint,
     )]
     pub destination_token: InterfaceAccount<'info, TokenAccount>,
-    pub owner: UncheckedAccount<'info>,
+    pub owner: AccountInfo<'info>,
     /// CHECK: ExtraAccountMetaList Account,
     #[account(
         seeds = [b"extra-account-metas", mint.key().as_ref()], 
@@ -177,9 +190,11 @@ pub struct TransferHook<'info> {
     )]
     pub extra_account_meta_list: UncheckedAccount<'info>,
     pub state: Account<'info, X404State>,
-    #[account(mut)]
+    #[account(mut)] 
     pub owner_store: Account<'info, OwnerStore>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub x404_program: Program<'info, X404>,
+    pub token_program: Program<'info, Token2022>,
 }
 
 pub fn initialize_extra_account(
@@ -201,6 +216,8 @@ pub fn initialize_extra_account(
             AccountMeta::new_readonly(x404_state, false),
             AccountMeta::new_readonly(owner_store, false),
             AccountMeta::new_readonly(AssociatedToken::id(), false),
+            AccountMeta::new_readonly(x404::id(), false),
+            AccountMeta::new_readonly(Token2022::id(), false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
     )

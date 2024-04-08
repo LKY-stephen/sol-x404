@@ -71,4 +71,10 @@ pub enum SolX404Error {
     // 21 - only call by hooker
     #[msg("Only call by hooker")]
     OnlyCallByHooker,
+    // 22 - only call by hooker
+    #[msg("Invalid NFT Mint")]
+    InvalidNFTMint,
+    // 23 - Not a valid deposit user
+    #[msg("InvalidDepositer")]
+    InvalidDepositer,
 }
